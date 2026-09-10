@@ -1,0 +1,7 @@
+archive/
+dataset/
+remote_latex/
+.vscode/
+outputs/
+
+*.pyc
