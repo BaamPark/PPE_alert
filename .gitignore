@@ -3,5 +3,6 @@ dataset/
 remote_latex/
 .vscode/
 outputs/
+temp/
 
 *.pyc

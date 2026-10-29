@@ -18,6 +18,7 @@ FRAME_RE = re.compile(r"^(sim\d+)_view_(\d+)_frame(\d+)\.")
 SYSTEM_PROMPT = """
 You are a PPE policy adherence evaluator.
 You receive cropped images of the same clinician from multiple camera views.
+You may also receive reference images that define the visual appearance of PPE categories.
 Use the PPE descriptions, requirement description, and violation visual cues to decide whether each violation alert should be raised.
 Return only valid JSON. Do not include markdown. Do not explain outside the JSON.
 """.strip()
@@ -63,6 +64,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--samples-json", default="dataset/five_simulation/y1_policy_eval_samples.json")
     parser.add_argument("--ppe-description", default="dataset/ppe_description.json")
     parser.add_argument("--policy-set", default="dataset/policy_set.json")
+    parser.add_argument("--reference-dir", default="dataset/reference")
+    parser.add_argument("--use-reference-images", action="store_true")
     parser.add_argument("--requirement-level", default="R4")
     parser.add_argument("--image-root", default=None)
     parser.add_argument("--output", default="outputs/llm/qwen3vl_policy_nonadherence_10.json")
@@ -172,6 +175,21 @@ def crop_view(
         return out_path
 
 
+def collect_reference_images(
+    reference_dir: Path,
+    ppe_descriptions: dict[str, str],
+) -> tuple[list[tuple[str, Path]], list[str]]:
+    references = []
+    missing = []
+    for label in ppe_descriptions:
+        path = reference_dir / f"{label}.jpg"
+        if path.exists():
+            references.append((label, path))
+        else:
+            missing.append(label)
+    return references, missing
+
+
 def prediction_alert(parsed: dict[str, Any], key: str) -> bool | None:
     alert_key = OUTPUT_KEY_TO_ALERT_KEY[key]
     alerts = parsed.get("alerts")
@@ -236,18 +254,36 @@ def run_one(
     model: Any,
     processor: Any,
     crop_paths: list[Path],
+    reference_images: list[tuple[str, Path]],
     prompt: str,
     max_new_tokens: int,
     temperature: float,
     enable_thinking: bool,
+    system_prompt: str = SYSTEM_PROMPT,
 ) -> str:
     content: list[dict[str, str]] = []
+    if reference_images:
+        content.append(
+            {
+                "type": "text",
+                "text": "Reference images below show visual examples of PPE categories.",
+            }
+        )
+        for label, path in reference_images:
+            content.append({"type": "image", "image": str(path)})
+            content.append({"type": "text", "text": f"Reference PPE category: {label}."})
+        content.append(
+            {
+                "type": "text",
+                "text": "Query images below are cropped views of the same clinician to evaluate.",
+            }
+        )
     for idx, path in enumerate(crop_paths):
         content.append({"type": "image", "image": str(path)})
         content.append({"type": "text", "text": f"Image {idx}: view crop from the same clinician."})
     content.append({"type": "text", "text": prompt})
     messages = [
-        {"role": "system", "content": [{"type": "text", "text": SYSTEM_PROMPT}]},
+        {"role": "system", "content": [{"type": "text", "text": system_prompt}]},
         {"role": "user", "content": content},
     ]
     chat_kwargs = {
@@ -294,6 +330,13 @@ def main() -> None:
         )
     image_root = Path(args.image_root) if args.image_root else None
     crop_dir = Path(args.crop_dir)
+    reference_images: list[tuple[str, Path]] = []
+    missing_reference_labels: list[str] = []
+    if args.use_reference_images:
+        reference_images, missing_reference_labels = collect_reference_images(
+            Path(args.reference_dir),
+            ppe_descriptions,
+        )
     samples = sample_items(sample_data["samples"], args.simulation, args.num_samples, args.seed)
     prompt = USER_PROMPT_TEMPLATE.format(
         ppe_descriptions=json.dumps(ppe_descriptions, indent=2),
@@ -309,6 +352,12 @@ def main() -> None:
         "requirement_level": args.requirement_level,
         "prediction_schema_version": "alerts_v1",
         "samples_json": args.samples_json,
+        "reference_images_enabled": args.use_reference_images,
+        "reference_images": [
+            {"label": label, "path": str(path)}
+            for label, path in reference_images
+        ],
+        "missing_reference_labels": missing_reference_labels,
         "sampling": {
             "method": "random_from_sample_level_json",
             "required_output_categories": OUTPUT_KEYS,
@@ -358,6 +407,7 @@ def main() -> None:
                 model,
                 processor,
                 crop_paths,
+                reference_images,
                 prompt,
                 args.max_new_tokens,
                 args.temperature,

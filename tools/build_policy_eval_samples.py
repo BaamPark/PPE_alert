@@ -133,7 +133,11 @@ def build_alert_ground_truth(
                 evidence_items.append((row["view"], attr, value))
                 if value in alert_keys.get(attr, []):
                     alert = True
-            if output_key == "mask_nonadherence" and row["attributes"].get("Eyewear") == "PR":
+            if (
+                output_key == "mask_nonadherence"
+                and row["attributes"].get("Eyewear") == "PR"
+                and row["attributes"].get("Mask") != "PR"
+            ):
                 evidence_items.append((row["view"], "Eyewear", "PR"))
         if output_key == "mask_nonadherence" and papr_present:
             alert = False
